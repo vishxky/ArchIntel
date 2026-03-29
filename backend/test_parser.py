@@ -23,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from parser import parse_floor_plan
+from geometry import reconstruct_geometry
 
 ROOT = Path(__file__).parent.parent
 
@@ -37,7 +38,7 @@ os.makedirs(str(ROOT / "output"), exist_ok=True)
 
 def run_all():
     print("\n" + "=" * 60)
-    print("  ArchIntel — Stage 1: Floor Plan Parser Test")
+    print("  ArchIntel — Stage 1 & 2: Floor Plan Parser & Geometry")
     print("=" * 60)
 
     all_results = {}
@@ -47,8 +48,18 @@ def run_all():
             print(f"\n  ⚠  Skipping {image_path} — file not found")
             continue
 
-        # Run the parser
+        # Run the parser (Stage 1)
         result = parse_floor_plan(image_path)
+
+        # Reconstruct physical geometry (Stage 2)
+        print("  Stage 2: Reconstructing Geometry (Meters + Load Bearing)...")
+        result, graph = reconstruct_geometry(result)
+        
+        geo_stats = result['geometry_stats']
+        print(f"          Scale: {result['scale']['px_per_meter']} px/m")
+        print(f"          Building Area: {geo_stats['building_area_m2']} m²")
+        print(f"          Load-bearing walls: {geo_stats['load_bearing_walls']}")
+        print(f"          Partition walls:    {geo_stats['partition_walls']}")
 
         # Save the JSON result
         plan_name = Path(image_path).stem
@@ -60,18 +71,22 @@ def run_all():
         all_results[plan_name] = result
 
     # Print a comparison summary table
-    print("\n" + "=" * 60)
-    print("  SUMMARY")
-    print("=" * 60)
-    print(f"  {'Plan':<10} {'Walls':>6} {'Rooms':>6} {'Openings':>9}")
-    print(f"  {'-'*35}")
+    print("\n" + "=" * 80)
+    print("  STAGE 2 GEOMETRY SUMMARY")
+    print("=" * 80)
+    print(f"  {'Plan':<10} | {'Walls':>5} {'LoadB':>6} {'Part':>5} | {'Area(m2)':>8} {'px/m':>6} | {'Rooms':>5}")
+    print(f"  {'-'*75}")
     for plan_name, result in all_results.items():
         w = result['debug']['num_walls']
         r = result['debug']['num_rooms']
-        o = result['debug']['num_openings']
-        print(f"  {plan_name:<10} {w:>6} {r:>6} {o:>9}")
-    print("=" * 60)
-    print("\n  ✓ All done! Check the output/ folder for debug images.")
+        geo = result['geometry_stats']
+        lb = geo['load_bearing_walls']
+        pt = geo['partition_walls']
+        area = geo['building_area_m2']
+        px_m = result['scale']['px_per_meter']
+        print(f"  {plan_name:<10} | {w:>5} {lb:>6} {pt:>5} | {area:>8.1f} {px_m:>6.1f} | {r:>5}")
+    print("=" * 80)
+    print("\n  ✓ Geometry generation complete! Check the output/ folder.")
     print("  Open output/plan_a_debug.png etc. to visually verify detections.\n")
 
 
