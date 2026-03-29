@@ -1,0 +1,11 @@
+{
+  "materials": [
+    {"name": "AAC Blocks",             "cost": 2, "strength": 3, "durability": 4, "best_use": "Partition walls"},
+    {"name": "Red Brick",              "cost": 3, "strength": 4, "durability": 3, "best_use": "Load-bearing walls"},
+    {"name": "RCC",                    "cost": 4, "strength": 5, "durability": 5, "best_use": "Columns, slabs, core structural walls"},
+    {"name": "Steel Frame",            "cost": 4, "strength": 5, "durability": 5, "best_use": "Long spans (>5m)"},
+    {"name": "Hollow Concrete Block",  "cost": 2, "strength": 3, "durability": 3, "best_use": "Non-structural walls"},
+    {"name": "Fly Ash Brick",          "cost": 2, "strength": 3, "durability": 4, "best_use": "General walling"},
+    {"name": "Precast Concrete Panel", "cost": 3, "strength": 4, "durability": 5, "best_use": "Structural walls, slabs"}
+  ]
+}

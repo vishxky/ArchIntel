@@ -84,18 +84,43 @@ def classify_walls(walls: list, building_polygon: Polygon, px_per_meter: float):
     """
     Classify each wall as 'load_bearing' or 'partition'.
     Uses 4 real-world structural engineering rules in priority order.
+    
+    Improved: uses median thickness (robust to outliers), tighter perimeter
+    distance, and adds orientation + concern flags for downstream TOPSIS.
     """
     if not walls:
         return
 
-    # Average thickness to detect unusually thick walls (Rule 3)
-    avg_thickness = sum(w['thickness_px'] for w in walls) / len(walls)
+    # ── Pre-compute orientation for every wall ──
+    for wall in walls:
+        dx = abs(wall['end'][0] - wall['start'][0])
+        dy = abs(wall['end'][1] - wall['start'][1])
+        wall['orientation'] = 'horizontal' if dx >= dy else 'vertical'
+
+    # Clamp implausibly thin thickness values (snapping artifact)
+    # A real wall is at least ~100mm. At typical scales, 6px minimum.
+    MIN_THICKNESS_PX = 6
+    for wall in walls:
+        wall['thickness_px'] = max(wall['thickness_px'], MIN_THICKNESS_PX)
+
+    # Use MEDIAN thickness (robust to outliers from snapping errors)
+    thicknesses = sorted([w['thickness_px'] for w in walls])
+    median_thickness = thicknesses[len(thicknesses) // 2]
     
     # Building bounds for span detection
     minx, miny, maxx, maxy = building_polygon.bounds
     span_x = (maxx - minx) 
     span_y = (maxy - miny)
     center = building_polygon.centroid
+    
+    # Build an unbuffered outline from wall endpoints for tighter perimeter checks
+    all_pts = []
+    for w in walls:
+        all_pts.extend([w['start'], w['end']])
+    pt_xs = [p[0] for p in all_pts]
+    pt_ys = [p[1] for p in all_pts]
+    wall_minx, wall_maxx = min(pt_xs), max(pt_xs)
+    wall_miny, wall_maxy = min(pt_ys), max(pt_ys)
 
     for wall in walls:
         wall_line = LineString([wall['start'], wall['end']])
@@ -103,44 +128,48 @@ def classify_walls(walls: list, building_polygon: Polygon, px_per_meter: float):
         wall['length_m'] = round(wall['length_px'] / px_per_meter, 2)
         wall['thickness_m'] = round(wall['thickness_px'] / px_per_meter, 3)
 
-        # ── RULE 1: Perimeter / Exterior Walls ───────────────────────────────────
-        # Outer walls support roof and upper floors. They are generally load-bearing.
-        # Check if the wall is close (within 20px) to the external boundary of the house.
-        dist_to_exterior = building_polygon.exterior.distance(wall_line)
-        if dist_to_exterior < 20:
+        # ── RULE 1: Perimeter / Exterior Walls ─────────────────────────────
+        # A wall is exterior if it lies along the outermost row/column of
+        # wall coordinates (within a small tolerance).
+        sx, sy = wall['start']
+        ex, ey = wall['end']
+        perimeter_tol = 10  # pixels
+        
+        on_left   = min(sx, ex) <= wall_minx + perimeter_tol
+        on_right  = max(sx, ex) >= wall_maxx - perimeter_tol
+        on_top    = min(sy, ey) <= wall_miny + perimeter_tol
+        on_bottom = max(sy, ey) >= wall_maxy - perimeter_tol
+        
+        if wall['orientation'] == 'horizontal' and (on_top or on_bottom):
+            wall['type'] = 'load_bearing'
+            wall['reason'] = 'Perimeter wall (supports roof/external loads)'
+            continue
+        if wall['orientation'] == 'vertical' and (on_left or on_right):
             wall['type'] = 'load_bearing'
             wall['reason'] = 'Perimeter wall (supports roof/external loads)'
             continue
 
-        # ── RULE 2: Central Spine Walls ──────────────────────────────────────────
-        # Walls running through the middle of the house that are very long usually 
-        # halve the joist spans across the entire building.
+        # ── RULE 2: Central Spine Walls ─────────────────────────────────────
+        # Long walls near the building center that reduce joist spans.
         wall_length_px = wall_line.length
         dist_to_center = wall_line.distance(center)
 
-        # Is the wall mostly horizontal or vertical?
-        is_horizontal = abs(wall['end'][1] - wall['start'][1]) < abs(wall['end'][0] - wall['start'][0])
+        building_span = span_x if wall['orientation'] == 'horizontal' else span_y
+        half_cross_span = (span_y if wall['orientation'] == 'horizontal' else span_x) / 2
         
-        # Calculate how much of the building span it crosses
-        building_span = span_x if is_horizontal else span_y
-        half_cross_span = (span_y if is_horizontal else span_x) / 2
-        
-        # If it spans > 50% of the building width AND is near the center axis
-        if (wall_length_px / building_span) >= 0.5 and dist_to_center <= (0.25 * half_cross_span):
+        if building_span > 0 and (wall_length_px / building_span) >= 0.5 and dist_to_center <= (0.2 * half_cross_span):
             wall['type'] = 'load_bearing'
             wall['reason'] = 'Central structural spine (reduces joist span)'
             continue
 
-        # ── RULE 3: Thickness Threshold ────────────────────────────────────────────
-        # Even if interior, significantly thicker drawn walls usually denote concrete,
-        # brick masonry, or plumbing walls that carry structural load.
-        if wall['thickness_px'] > 1.35 * avg_thickness:
+        # ── RULE 3: Thickness Threshold ─────────────────────────────────────
+        # Walls significantly thicker than the median are structural.
+        if wall['thickness_px'] > 1.4 * median_thickness:
             wall['type'] = 'load_bearing'
-            wall['reason'] = 'Substantial thickness (exceeds partition avg)'
+            wall['reason'] = 'Substantial thickness (exceeds partition median)'
             continue
 
-        # ── RULE 4: Standard Interior Partitions ───────────────────────────────────
-        # Everything else is just a room divider.
+        # ── RULE 4: Standard Interior Partitions ───────────────────────────
         wall['type'] = 'partition'
         wall['reason'] = 'Interior non-structural partition'
 

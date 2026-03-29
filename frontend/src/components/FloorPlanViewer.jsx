@@ -1,23 +1,31 @@
-import React, { Suspense } from 'react';
+import React, { Suspense, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
-import { OrbitControls, Grid, SoftShadows, Sky } from '@react-three/drei';
+import { OrbitControls, Grid, SoftShadows } from '@react-three/drei';
 import Wall from './Wall';
 import Room from './Room';
 
-export default function FloorPlanViewer({ parsedData }) {
+export default function FloorPlanViewer({ parsedData, selectedWallId, onWallClick }) {
   if (!parsedData || !parsedData.walls) {
     return null;
   }
 
   const { walls, rooms, scale } = parsedData;
+  const px_per_meter = scale.px_per_meter;
 
-  // The floor plan is parsed with (0,0) at top-left.
-  // We want to center the model.
-  // We can let OrbitControls handle framing or just center it.
+  // Compute the centroid of all wall endpoints to center the model at origin
+  const offset = useMemo(() => {
+    let sumX = 0, sumZ = 0, count = 0;
+    for (const w of walls) {
+      sumX += w.start[0] / px_per_meter + w.end[0] / px_per_meter;
+      sumZ += w.start[1] / px_per_meter + w.end[1] / px_per_meter;
+      count += 2;
+    }
+    return { x: sumX / count, z: sumZ / count };
+  }, [walls, px_per_meter]);
   
   return (
     <div className="canvas-container">
-      <Canvas shadows camera={{ position: [-15, 25, 25], fov: 45 }}>
+      <Canvas shadows camera={{ position: [-8, 18, 18], fov: 45 }}>
         <SoftShadows size={15} samples={10} focus={0.5} />
         
         <color attach="background" args={['#0f1115']} />
@@ -34,10 +42,11 @@ export default function FloorPlanViewer({ parsedData }) {
           shadow-camera-top={20}
           shadow-camera-bottom={-20}
         />
-        <directionalLight position={[-10, 15, -10]} intensity={0.5} color="#8facff" />
+        <directionalLight position={[-10, 15, -10]} intensity={0.4} color="#8facff" />
 
         <Suspense fallback={null}>
-          <group position={[0, 0, 0]}>
+          {/* Center the model at origin */}
+          <group position={[-offset.x, 0, -offset.z]}>
             {/* Draw Rooms (Floor pads) */}
             {rooms && rooms.map(room => (
               <Room key={room.id} data={room} scale={scale} />
@@ -45,28 +54,36 @@ export default function FloorPlanViewer({ parsedData }) {
             
             {/* Draw Walls */}
             {walls && walls.map(wall => (
-              <Wall key={wall.id} data={wall} scale={scale} />
+              <Wall 
+                key={wall.id} 
+                data={wall} 
+                scale={scale} 
+                isSelected={selectedWallId === wall.id}
+                onClick={() => onWallClick && onWallClick(wall)}
+              />
             ))}
             
             {/* Base Grid helper */}
             <Grid 
-              position={[0, -0.01, 0]}
-              args={[100, 100]} 
+              position={[offset.x, -0.01, offset.z]}
+              args={[80, 80]} 
               cellSize={1} 
               cellThickness={1} 
               cellColor="#1c202a" 
               sectionSize={5} 
               sectionThickness={1.5} 
               sectionColor="#2a303f" 
-              fadeDistance={50} 
+              fadeDistance={40} 
             />
           </group>
         </Suspense>
 
         <OrbitControls 
           makeDefault 
-          target={[0, 0, 0]} 
-          maxPolarAngle={Math.PI / 2 - 0.05} 
+          target={[0, 1.5, 0]} 
+          maxPolarAngle={Math.PI / 2 - 0.05}
+          minDistance={5}
+          maxDistance={50}
         />
       </Canvas>
     </div>
