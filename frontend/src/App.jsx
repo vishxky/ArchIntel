@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import axios from 'axios';
-import { Layers, Map, AlertTriangle, Award, Shield, DollarSign } from 'lucide-react';
+import { Layers, Map, AlertTriangle, Award, Shield, DollarSign, MessageSquareText, Loader2 } from 'lucide-react';
 import FloorPlanViewer from './components/FloorPlanViewer';
 import './index.css';
 
@@ -13,6 +13,8 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
   const [selectedWall, setSelectedWall] = useState(null);
+  const [explanation, setExplanation] = useState(null);
+  const [explainLoading, setExplainLoading] = useState(false);
 
   // Fetch available plans on mount
   useEffect(() => {
@@ -40,6 +42,7 @@ function App() {
       setLoading(true);
       setError(null);
       setSelectedWall(null);
+      setExplanation(null);
       try {
         const res = await axios.get(`${API_BASE}/parse/${activePlan}`);
         if (!cancelled) {
@@ -57,8 +60,32 @@ function App() {
     return () => { cancelled = true; };
   }, [activePlan]);
 
+  // Fetch explanation on-demand when a wall is selected
+  const fetchExplanation = useCallback(async (wallId) => {
+    if (!activePlan || !wallId) return;
+    setExplainLoading(true);
+    setExplanation(null);
+    try {
+      const res = await axios.get(`${API_BASE}/explain/${activePlan}/${wallId}`);
+      if (res.data.success) {
+        setExplanation(res.data);
+      }
+    } catch (err) {
+      console.error('Explanation fetch failed:', err);
+      setExplanation({ explanation: 'Unable to generate explanation at this time.', provider: 'error' });
+    } finally {
+      setExplainLoading(false);
+    }
+  }, [activePlan]);
+
   const handleWallClick = (wall) => {
-    setSelectedWall(prev => prev?.id === wall.id ? null : wall);
+    if (selectedWall?.id === wall.id) {
+      setSelectedWall(null);
+      setExplanation(null);
+    } else {
+      setSelectedWall(wall);
+      fetchExplanation(wall.id);
+    }
   };
 
   return (
@@ -147,7 +174,7 @@ function App() {
           <div className="material-panel glass-panel">
             <div className="material-panel-header">
               <h2 className="panel-title">Material Analysis</h2>
-              <button className="close-btn" onClick={() => setSelectedWall(null)}>✕</button>
+              <button className="close-btn" onClick={() => { setSelectedWall(null); setExplanation(null); }}>✕</button>
             </div>
 
             {/* Wall Identity */}
@@ -208,6 +235,36 @@ function App() {
                   <div className="material-score">{(mat.score * 100).toFixed(1)}%</div>
                 </div>
               ))}
+            </div>
+
+            {/* LLM Explanation — Stage 5 */}
+            <div className="divider" />
+            <div className="explanation-section">
+              <h3 className="panel-title">
+                <MessageSquareText size={14} style={{display: 'inline', marginRight: 6, verticalAlign: 'middle'}} />
+                AI Structural Report
+              </h3>
+              {explainLoading ? (
+                <div className="explain-loading">
+                  <Loader2 size={16} className="spin-icon" />
+                  <span>Generating structural analysis...</span>
+                </div>
+              ) : explanation ? (
+                <div className="explain-content">
+                  <p className="explain-text">{explanation.explanation}</p>
+                  {explanation.critical_concern && (
+                    <div className="explain-concern">
+                      <AlertTriangle size={14} />
+                      <span>{explanation.critical_concern}</span>
+                    </div>
+                  )}
+                  <div className="explain-provider">
+                    via {explanation.provider || 'LLM'}
+                  </div>
+                </div>
+              ) : (
+                <div className="explain-placeholder">Click a wall to generate a report</div>
+              )}
             </div>
           </div>
         )}

@@ -6,3 +6,6 @@ fastapi
 uvicorn
 python-multipart
 Pillow
+google-genai
+mistralai
+pydantic

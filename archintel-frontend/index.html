@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ArchIntel — Autonomous Structural Intelligence System</title>
+    <meta name="description" content="AI-powered floor plan analysis: parse, reconstruct in 3D, and get material recommendations with explainable reasoning.">
+    <link rel="stylesheet" href="style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+            "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+        }
+    }
+    </script>
+</head>
+<body>
+
+    <!-- =================== LOADING OVERLAY =================== -->
+    <div id="loading-overlay" class="loading-overlay hidden">
+        <div class="loader-content">
+            <div class="spinner"></div>
+            <p id="loading-text">Initializing pipeline...</p>
+            <div class="progress-bar-container">
+                <div id="progress-bar" class="progress-bar"></div>
+            </div>
+            <p id="loading-sub" class="loading-sub"></p>
+        </div>
+    </div>
+
+    <!-- =================== APP SHELL =================== -->
+    <div class="app-shell">
+
+        <!-- ——— HEADER: Logo + branding + status ——— -->
+        <header class="header">
+            <div class="header-left">
+                <img src="ArchIntel-Logo.jpg" alt="ArchIntel" class="logo-img" />
+                <div class="logo-text">
+                    <h1>ArchIntel</h1>
+                    <span class="subtitle">Autonomous Structural Intelligence System</span>
+                </div>
+            </div>
+            <div class="header-right">
+                <div class="status-badge">
+                    <div id="status-dot" class="status-dot status-ready"></div>
+                    <span id="status-text">Ready</span>
+                </div>
+                <div id="backend-indicator" class="backend-indicator disconnected" title="Backend not connected">
+                    <i data-lucide="server"></i>
+                </div>
+            </div>
+        </header>
+
+        <!-- ——— TOOLBAR: Controls + Plan Preview thumbnail ——— -->
+        <div class="toolbar">
+            <input type="file" id="file-input" accept="image/png,image/jpeg" hidden>
+
+            <!-- Left: action buttons -->
+            <div class="toolbar-left">
+                <button id="btn-upload" class="btn btn-outline">
+                    <i data-lucide="upload"></i><span>Upload Plan</span>
+                </button>
+
+                <div class="toolbar-divider"></div>
+                <span class="toolbar-label">Sample:</span>
+
+                <div class="plan-tabs">
+                    <button class="btn btn-tab" data-plan="A" title="Load Plan A">A</button>
+                    <button class="btn btn-tab" data-plan="B" title="Load Plan B">B</button>
+                    <button class="btn btn-tab" data-plan="C" title="Load Plan C">C</button>
+                </div>
+
+                <div class="toolbar-divider"></div>
+
+                <button id="btn-fallback" class="btn btn-outline" title="OpenCV failed? Enter wall coordinates manually">
+                    <i data-lucide="pen-line"></i><span>Manual Entry</span>
+                </button>
+
+                <div class="toolbar-divider"></div>
+
+                <button id="btn-analyze" class="btn btn-primary" disabled>
+                    <i data-lucide="play"></i><span>Analyze</span>
+                </button>
+
+                <button id="btn-export" class="btn btn-outline" disabled>
+                    <i data-lucide="download"></i><span>Export GLB</span>
+                </button>
+            </div>
+
+            <!-- Right: Plan preview thumbnail (appears after upload/selection) -->
+            <div class="toolbar-right">
+                <div id="preview-slot" class="preview-slot">
+                    <div id="preview-empty" class="preview-empty">
+                        <i data-lucide="image"></i>
+                        <span>No plan selected</span>
+                    </div>
+                    <div id="preview-loaded" class="preview-loaded hidden">
+                        <img id="preview-img" src="" alt="Selected plan" />
+                        <div class="preview-meta">
+                            <span id="preview-name" class="preview-name"></span>
+                            <span id="preview-dims" class="preview-dims"></span>
+                        </div>
+                        <button id="preview-clear" class="preview-clear" title="Remove plan">
+                            <i data-lucide="x"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ——— MAIN PANELS (2D left | 3D right) ——— -->
+        <main class="content-area">
+
+            <!-- LEFT: 2D Analysis output from backend -->
+            <section class="panel panel-left">
+                <div class="panel-header">
+                    <h2><i data-lucide="scan-line"></i> 2D Analysis</h2>
+                    <div class="panel-controls">
+                        <!-- Toggle between different backend output layers -->
+                        <button id="btn-layer-edges" class="btn btn-tiny layer-btn active" data-layer="edges" title="Show edge detection output" disabled>
+                            Edges
+                        </button>
+                        <button id="btn-layer-walls" class="btn btn-tiny layer-btn" data-layer="walls" title="Show wall overlay" disabled>
+                            Walls
+                        </button>
+                        <button id="btn-layer-rooms" class="btn btn-tiny layer-btn" data-layer="rooms" title="Show room polygons" disabled>
+                            Rooms
+                        </button>
+                    </div>
+                </div>
+
+                <div id="analysis-body" class="panel-body panel-body-center">
+                    <!-- Backend-generated image/canvas rendered here ONLY after Analyze -->
+                    <canvas id="canvas-2d"></canvas>
+
+                    <!-- Empty state: waiting for analysis -->
+                    <div id="empty-state-2d" class="empty-state">
+                        <div class="empty-icon-ring">
+                            <i data-lucide="scan-line"></i>
+                        </div>
+                        <p class="empty-title">Awaiting Analysis</p>
+                        <p class="empty-desc">Select a floor plan and click <strong>Analyze</strong>. The backend's edge detection, wall outlines, and room boundaries will render here.</p>
+                    </div>
+                </div>
+
+                <!-- Stats bar: appears after analysis -->
+                <div id="stats-bar-2d" class="stats-bar hidden">
+                    <div class="stat-chip">
+                        <i data-lucide="ruler"></i>
+                        <span id="stat-walls">— Walls</span>
+                    </div>
+                    <div class="stat-chip">
+                        <i data-lucide="layout"></i>
+                        <span id="stat-rooms">— Rooms</span>
+                    </div>
+                    <div class="stat-chip">
+                        <i data-lucide="door-open"></i>
+                        <span id="stat-openings">— Openings</span>
+                    </div>
+                    <div class="stat-chip">
+                        <i data-lucide="move-diagonal"></i>
+                        <span id="stat-scale">Scale: —</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- RIGHT: 3D viewer -->
+            <section class="panel panel-right">
+                <div class="panel-header">
+                    <h2><i data-lucide="box"></i> 3D Structural Model</h2>
+                    <div class="panel-controls">
+                        <button id="btn-reset-camera" class="btn btn-icon btn-tiny" title="Reset camera">
+                            <i data-lucide="rotate-ccw"></i>
+                        </button>
+                        <button id="btn-toggle-rotate" class="btn btn-icon btn-tiny active" title="Toggle auto-rotate">
+                            <i data-lucide="refresh-cw"></i>
+                        </button>
+                    </div>
+                </div>
+                <div class="panel-body">
+                    <div id="three-container"></div>
+
+                    <div id="legend-3d" class="legend hidden">
+                        <div class="legend-item"><span class="legend-swatch" style="background:#3b5bdb"></span>Load-bearing</div>
+                        <div class="legend-item"><span class="legend-swatch" style="background:#868e96"></span>Partition</div>
+                        <div class="legend-item"><span class="legend-swatch" style="background:#e0e0e0"></span>Floor slab</div>
+                    </div>
+
+                    <div id="empty-state-3d" class="empty-state">
+                        <div class="empty-icon-ring">
+                            <i data-lucide="box"></i>
+                        </div>
+                        <p class="empty-title">3D model will appear here</p>
+                        <p class="empty-desc">After analysis, walls are extruded to 3 m height. Blue = load-bearing, grey = partition.</p>
+                    </div>
+                </div>
+            </section>
+        </main>
+
+        <!-- ——— BOTTOM PANEL: Material + Explanations ——— -->
+        <section class="panel panel-bottom">
+            <div class="panel-header panel-header-bottom" id="bottom-toggle-header">
+                <h2><i data-lucide="flask-conical"></i> Material Intelligence &amp; Structural Explanation</h2>
+                <div class="panel-controls">
+                    <button id="btn-expand-bottom" class="btn btn-icon btn-tiny" title="Expand/collapse">
+                        <i data-lucide="chevron-up"></i>
+                    </button>
+                </div>
+            </div>
+            <div id="bottom-body" class="panel-body-bottom">
+                <div id="empty-state-materials" class="empty-state-inline">
+                    <i data-lucide="flask-conical"></i>
+                    <p>Run analysis to generate TOPSIS-ranked material recommendations and AI-powered structural explanations per wall element.</p>
+                </div>
+                <div id="material-cards" class="material-cards-grid hidden"></div>
+                <div id="concerns-section" class="concerns-section hidden">
+                    <h3><i data-lucide="alert-triangle"></i> Structural Concerns</h3>
+                    <div id="concerns-list"></div>
+                </div>
+            </div>
+        </section>
+
+    </div><!-- /app-shell -->
+
+    <!-- =================== FALLBACK MANUAL ENTRY PANEL =================== -->
+    <!-- This panel slides in when OpenCV parsing fails or is skipped.       -->
+    <!-- The user enters wall coordinates manually; the data is formatted     -->
+    <!-- into the same JSON structure that /api/parse would return, then      -->
+    <!-- passed directly into the 3D model + TOPSIS + LLM pipeline.          -->
+    <div id="fallback-overlay" class="fb-overlay hidden"></div>
+    <div id="fallback-panel" class="fb-panel hidden">
+
+        <div class="fb-header">
+            <div class="fb-title">
+                <i data-lucide="pen-line"></i>
+                <div>
+                    <h2>Manual Coordinate Entry</h2>
+                    <p>Use when OpenCV parsing fails. Enter wall data directly — the 3D, TOPSIS, and explanation stages will still run fully.</p>
+                </div>
+            </div>
+            <button id="fb-close" class="btn btn-icon" title="Close panel">
+                <i data-lucide="x"></i>
+            </button>
+        </div>
+
+        <div class="fb-body">
+
+            <!-- ── SECTION 1: SCALE ── -->
+            <div class="fb-section">
+                <div class="fb-section-header">
+                    <i data-lucide="ruler"></i>
+                    <h3>Building Scale</h3>
+                    <span class="fb-badge required">Required</span>
+                </div>
+                <p class="fb-section-desc">Used to convert pixel coordinates into real-world meters so TOPSIS explanations cite actual dimensions (e.g. "4.8 m wall").</p>
+                <div class="fb-row">
+                    <div class="fb-field">
+                        <label for="fb-building-width">Assumed building width <span class="unit">(meters)</span></label>
+                        <input id="fb-building-width" type="number" min="1" max="100" value="12" step="0.5" class="fb-input" />
+                        <span class="fb-hint">Typical residential = 10–15 m. This sets the px/m scale factor.</span>
+                    </div>
+                    <div class="fb-field">
+                        <label for="fb-img-width">Floor plan image width <span class="unit">(pixels)</span></label>
+                        <input id="fb-img-width" type="number" min="100" max="5000" value="800" class="fb-input" />
+                        <span class="fb-hint">Pixel width of the longest axis of your floor plan image.</span>
+                    </div>
+                </div>
+                <div class="fb-scale-preview">
+                    <i data-lucide="info"></i>
+                    Scale factor: <strong id="fb-scale-val">—</strong> px / meter
+                </div>
+            </div>
+
+            <!-- ── SECTION 2: WALLS ── -->
+            <div class="fb-section">
+                <div class="fb-section-header">
+                    <i data-lucide="minus"></i>
+                    <h3>Walls</h3>
+                    <span class="fb-badge required">Required</span>
+                    <span class="fb-badge info">Drives 3D + TOPSIS + LLM</span>
+                </div>
+                <p class="fb-section-desc">
+                    Each wall needs two endpoints. Measure pixel coordinates from the <strong>top-left corner</strong> of your floor plan image.
+                    <br>Tip: open the image in Paint/Preview and hover over endpoints to read pixel coordinates.
+                </p>
+
+                <div class="fb-table-wrap">
+                    <table class="fb-table" id="walls-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Start X <span class="unit">px</span></th>
+                                <th>Start Y <span class="unit">px</span></th>
+                                <th>End X <span class="unit">px</span></th>
+                                <th>End Y <span class="unit">px</span></th>
+                                <th>Thickness <span class="unit">px</span></th>
+                                <th>Type</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="walls-tbody">
+                            <!-- rows added by JS -->
+                        </tbody>
+                    </table>
+                </div>
+                <button id="fb-add-wall" class="btn btn-outline fb-add-btn">
+                    <i data-lucide="plus"></i> Add Wall
+                </button>
+
+                <div class="fb-type-guide">
+                    <div class="fb-type-item">
+                        <span class="type-swatch load"></span>
+                        <strong>Load-bearing</strong> — outer perimeter walls, central spine walls, or walls thicker than average. Strength is prioritised in TOPSIS.
+                    </div>
+                    <div class="fb-type-item">
+                        <span class="type-swatch part"></span>
+                        <strong>Partition</strong> — interior dividing walls carrying no structural load. Cost is prioritised in TOPSIS.
+                    </div>
+                </div>
+            </div>
+
+            <!-- ── SECTION 3: ROOMS (optional) ── -->
+            <div class="fb-section">
+                <div class="fb-section-header">
+                    <i data-lucide="layout"></i>
+                    <h3>Rooms</h3>
+                    <span class="fb-badge optional">Optional</span>
+                </div>
+                <p class="fb-section-desc">Room data enriches the 2D overlay with coloured fills and labels. Enter up to 4 corner points per room (top-left → clockwise).</p>
+
+                <div id="rooms-list" class="fb-rooms-list"></div>
+                <button id="fb-add-room" class="btn btn-outline fb-add-btn">
+                    <i data-lucide="plus"></i> Add Room
+                </button>
+            </div>
+
+            <!-- ── SECTION 4: OPENINGS (optional) ── -->
+            <div class="fb-section">
+                <div class="fb-section-header">
+                    <i data-lucide="door-open"></i>
+                    <h3>Doors &amp; Windows</h3>
+                    <span class="fb-badge optional">Optional</span>
+                </div>
+                <p class="fb-section-desc">Enter the pixel position of each door/window midpoint. The wall ID links the opening to its parent wall.</p>
+
+                <div class="fb-table-wrap">
+                    <table class="fb-table" id="openings-table">
+                        <thead>
+                            <tr>
+                                <th>ID</th>
+                                <th>Type</th>
+                                <th>Wall ID</th>
+                                <th>Position X <span class="unit">px</span></th>
+                                <th>Position Y <span class="unit">px</span></th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="openings-tbody"></tbody>
+                    </table>
+                </div>
+                <button id="fb-add-opening" class="btn btn-outline fb-add-btn">
+                    <i data-lucide="plus"></i> Add Opening
+                </button>
+            </div>
+
+            <!-- ── DISCLOSURE NOTE ── -->
+            <div class="fb-disclosure">
+                <i data-lucide="alert-circle"></i>
+                <p><strong>Disclosure:</strong> This is the manual fallback mode as permitted by the hackathon rules. The pipeline (3D model, TOPSIS material ranking, LLM explanations) remains fully automated — only the coordinate source changes. This will be disclosed during the demo.</p>
+            </div>
+
+        </div><!-- /fb-body -->
+
+        <div class="fb-footer">
+            <span id="fb-wall-count" class="fb-wall-count">0 walls defined</span>
+            <div style="display:flex;gap:10px;">
+                <button id="fb-reset" class="btn btn-outline">Reset all</button>
+                <button id="fb-apply" class="btn btn-primary">
+                    <i data-lucide="check"></i> Use Manual Data &amp; Analyze
+                </button>
+            </div>
+        </div>
+
+    </div><!-- /fallback-panel -->
+
+    <script>lucide.createIcons();</script>
+    <script type="module" src="script.js"></script>
+</body>
+</html>

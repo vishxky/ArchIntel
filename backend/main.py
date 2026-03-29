@@ -9,6 +9,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from parser import parse_floor_plan
 from geometry import reconstruct_geometry
 from topsis import analyze_all
+from explainer import explain_all, explain_wall
 
 app = FastAPI(title="ArchIntel API", description="AI Floor Plan to 3D Geometry Extractor")
 
@@ -42,10 +43,9 @@ def list_plans():
 @app.get("/api/parse/{plan_id}")
 def parse_plan(plan_id: str):
     """
-    Run Stage 1 (CV Parsing), Stage 2 (Geometry), and Stage 4 (TOPSIS)
-    on the requested plan. Returns the full analysis-ready structure.
+    Run Stages 1-4 on the requested plan.
+    Explanations (Stage 5) are generated lazily via /api/explain.
     """
-    # Check cache first
     if plan_id in _cache:
         return _cache[plan_id]
 
@@ -54,24 +54,65 @@ def parse_plan(plan_id: str):
         raise HTTPException(status_code=404, detail="Floor plan not found")
 
     try:
-        # Stage 1: CV Parsing (walls, rooms, openings in pixels)
+        # Stage 1: CV Parsing
         parsed_data = parse_floor_plan(str(image_path))
-        
-        # Stage 2: Geometry (meters, classifications, graph)
+        # Stage 2: Geometry Reconstruction
         result, _ = reconstruct_geometry(parsed_data)
-        
-        # Stage 4: Material Analysis (TOPSIS rankings per wall)
+        # Stage 4: TOPSIS Material Analysis
         result = analyze_all(result)
-        
-        response = {
-            "success": True,
-            "plan_id": plan_id,
-            "data": result
-        }
-        
-        # Cache the result
+
+        response = {"success": True, "plan_id": plan_id, "data": result}
         _cache[plan_id] = response
         return response
-        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/explain/{plan_id}")
+def explain_plan(plan_id: str):
+    """
+    Stage 5: Generate LLM explanations for all walls in a plan.
+    Calls the LLM once per wall (Gemini primary, Mistral fallback).
+    Results are cached after first generation.
+    """
+    cache_key = f"{plan_id}_explained"
+    if cache_key in _cache:
+        return _cache[cache_key]
+
+    # Ensure the plan has been parsed first
+    if plan_id not in _cache:
+        parse_plan(plan_id)  # triggers Stages 1-4
+
+    base_data = _cache[plan_id]
+    import copy
+    result = copy.deepcopy(base_data["data"])
+
+    try:
+        result = explain_all(result)
+        response = {"success": True, "plan_id": plan_id, "data": result}
+        _cache[cache_key] = response
+        return response
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/explain/{plan_id}/{wall_id}")
+def explain_single_wall(plan_id: str, wall_id: str):
+    """
+    Generate an LLM explanation for a single wall (on-demand).
+    Used by the frontend when clicking a wall.
+    """
+    # Ensure the plan is parsed
+    if plan_id not in _cache:
+        parse_plan(plan_id)
+
+    walls = _cache[plan_id]["data"]["walls"]
+    wall = next((w for w in walls if w["id"] == wall_id), None)
+    if not wall:
+        raise HTTPException(status_code=404, detail=f"Wall {wall_id} not found")
+
+    try:
+        result = explain_wall(wall)
+        return {"success": True, "wall_id": wall_id, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
