@@ -27,3 +27,7 @@ Thumbs.db
 
 # Output
 output/
+
+# Node
+node_modules/
+frontend/dist/
