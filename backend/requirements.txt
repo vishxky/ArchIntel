@@ -1,0 +1,8 @@
+opencv-python
+numpy
+shapely
+networkx
+fastapi
+uvicorn
+python-multipart
+Pillow
