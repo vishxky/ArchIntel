@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
-import { Layers, Map, AlertTriangle, Award, Shield, DollarSign, MessageSquareText, Loader2 } from 'lucide-react';
+import { Layers, Map, Upload, AlertCircle, FileText, IndianRupee, Cpu, Box, Loader2, Download, Zap, Image as ImageIcon, BoxSelect } from 'lucide-react';
 import FloorPlanViewer from './components/FloorPlanViewer';
 import './index.css';
 
@@ -10,281 +10,334 @@ function App() {
   const [plans, setPlans] = useState([]);
   const [activePlan, setActivePlan] = useState(null);
   const [parsedData, setParsedData] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [costData, setCostData] = useState(null);
+  
+  const [loading, setLoading] = useState(false);
+  const [uploading, setUploading] = useState(false);
   const [error, setError] = useState(null);
+  
   const [selectedWall, setSelectedWall] = useState(null);
   const [explanation, setExplanation] = useState(null);
   const [explainLoading, setExplainLoading] = useState(false);
+  
+  const [activeTab, setActiveTab] = useState('materials');
+  const fileInputRef = useRef(null);
+  const viewerRef = useRef(null);
 
-  // Fetch available plans on mount
   useEffect(() => {
     async function fetchPlans() {
       try {
         const res = await axios.get(`${API_BASE}/plans`);
         setPlans(res.data.plans);
-        if (res.data.plans.length > 0) {
-          setActivePlan(res.data.plans[0].id);
-        }
+        if (res.data.plans.length > 0) setActivePlan(res.data.plans[0].id);
       } catch (err) {
-        setError('Failed to connect to ArchIntel API. Is the backend running?');
-        setLoading(false);
+        setError('Failed to connect to ArchIntel API.');
       }
     }
     fetchPlans();
   }, []);
 
-  // Fetch parsed geometry when activePlan changes
   useEffect(() => {
     if (!activePlan) return;
     let cancelled = false;
     
-    async function parsePlan() {
-      setLoading(true);
-      setError(null);
-      setSelectedWall(null);
-      setExplanation(null);
+    async function fetchAll() {
+      setLoading(true); setError(null);
+      setSelectedWall(null); setExplanation(null); setCostData(null);
+      
       try {
-        const res = await axios.get(`${API_BASE}/parse/${activePlan}`);
+        const [parseRes, costRes] = await Promise.all([
+          axios.get(`${API_BASE}/parse/${activePlan}`),
+          axios.get(`${API_BASE}/cost/${activePlan}`).catch(() => ({ data: { data: null } }))
+        ]);
+        
         if (!cancelled) {
-          setParsedData(res.data.data);
+          setParsedData(parseRes.data.data);
+          setCostData(costRes.data?.data);
           setLoading(false);
         }
       } catch (err) {
         if (!cancelled) {
-          setError('Failed to parse floor plan.');
+          setError('Failed to process floor plan API requests.');
           setLoading(false);
         }
       }
     }
-    parsePlan();
+    fetchAll();
     return () => { cancelled = true; };
   }, [activePlan]);
 
-  // Fetch explanation on-demand when a wall is selected
-  const fetchExplanation = useCallback(async (wallId) => {
-    if (!activePlan || !wallId) return;
+  const handleWallClick = useCallback(async (wall) => {
+    if (selectedWall?.id === wall.id) {
+      setSelectedWall(null);
+      setExplanation(null);
+      return;
+    }
+    
+    setSelectedWall(wall);
     setExplainLoading(true);
     setExplanation(null);
+    
+    if (activeTab === 'cost') setActiveTab('materials');
+
     try {
-      const res = await axios.get(`${API_BASE}/explain/${activePlan}/${wallId}`);
+      const res = await axios.get(`${API_BASE}/explain/${activePlan}/${wall.id}`);
       if (res.data.success) {
         setExplanation(res.data);
       }
     } catch (err) {
-      console.error('Explanation fetch failed:', err);
-      setExplanation({ explanation: 'Unable to generate explanation at this time.', provider: 'error' });
+      setExplanation({ explanation: 'AI Generation failed. Fallback triggered.', provider: 'error' });
     } finally {
       setExplainLoading(false);
     }
-  }, [activePlan]);
+  }, [selectedWall, activePlan, activeTab]);
 
-  const handleWallClick = (wall) => {
-    if (selectedWall?.id === wall.id) {
-      setSelectedWall(null);
-      setExplanation(null);
+  const handleFileUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    setUploading(true);
+    try {
+      const res = await axios.post(`${API_BASE}/upload`, formData, {
+        headers: { 'Content-Type': 'multipart/form-data' }
+      });
+      const listRes = await axios.get(`${API_BASE}/plans`);
+      setPlans(listRes.data.plans);
+      setActivePlan(res.data.plan_id);
+    } catch (err) {
+      alert("Failed to upload image. Must be PNG/JPG.");
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  };
+
+  const getSourceImageUrl = () => {
+    if (!activePlan) return '';
+    return `${API_BASE}/image/${activePlan}?t=${new Date().getTime()}`;
+  };
+
+  const exportGLB = () => {
+    if (viewerRef.current?.exportGLB) {
+      viewerRef.current.exportGLB(`${activePlan}_3dmodel.glb`);
     } else {
-      setSelectedWall(wall);
-      fetchExplanation(wall.id);
+      alert("GLB export feature is not ready yet.");
     }
   };
 
   return (
-    <div className="app-container">
-      {/* 3D Canvas */}
-      <FloorPlanViewer 
-        parsedData={parsedData} 
-        selectedWallId={selectedWall?.id}
-        onWallClick={handleWallClick}
-      />
-
-      {/* UI Overlay */}
-      <div className="ui-overlay">
+    <div className="dashboard">
+      
+      {/* LEFT SIDEBAR */}
+      <aside className="sidebar">
         
-        {/* Brand */}
-        <header className="header">
-          <div className="brand">
-            <Layers size={28} />
-            <span>ArchIntel</span>
-          </div>
-        </header>
+        <div className="brand">
+          <img src="/archintel-logo.png" alt="ArchIntel Logo" />
+          <h1>ArchIntel</h1>
+        </div>
+        
+        <div className="section-title">Blueprint Selection</div>
+        <div className="plan-list">
+          {plans.map(p => (
+            <button 
+              key={p.id} 
+              className={`btn ${activePlan === p.id ? 'active' : ''}`}
+              onClick={() => setActivePlan(p.id)}
+            >
+              {p.id.replace('_', ' ')}
+            </button>
+          ))}
+        </div>
+        
+        <div style={{ display: 'flex', gap: '8px' }}>
+          <button className="btn btn-primary" onClick={() => fileInputRef.current?.click()} disabled={uploading}>
+            {uploading ? <Loader2 className="spinner" /> : <Upload size={16} />} 
+            {uploading ? 'Uploading...' : 'Upload'}
+          </button>
+          <input type="file" ref={fileInputRef} onChange={handleFileUpload} accept="image/png, image/jpeg" style={{ display: 'none' }} />
+          
+          <button className="btn" onClick={exportGLB} title="Download GLB" disabled={!parsedData}>
+            <Download size={16} /> Export
+          </button>
+        </div>
 
-        {/* Left Sidebar */}
-        <aside className="sidebar glass-panel">
-          <h2 className="panel-title">Floor Plans</h2>
-          <div className="plan-selector">
-            {plans.map(plan => (
-              <button 
-                key={plan.id}
-                className={`plan-btn ${activePlan === plan.id ? 'active' : ''}`}
-                onClick={() => setActivePlan(plan.id)}
-              >
-                <span>{plan.id.replace('_', ' ').toUpperCase()}</span>
-                <Map size={16} />
-              </button>
-            ))}
-          </div>
+        <div className="divider" />
+        
+        {/* ANALYSIS TABS */}
+        <div className="tabs">
+          <button className={`tab ${activeTab === 'materials' ? 'active' : ''}`} onClick={() => setActiveTab('materials')}>MATERIALS</button>
+          <button className={`tab ${activeTab === 'ai' ? 'active' : ''}`} onClick={() => setActiveTab('ai')}>AI REPORT</button>
+          <button className={`tab ${activeTab === 'cost' ? 'active' : ''}`} onClick={() => setActiveTab('cost')}>ESTIMATE</button>
+        </div>
 
-          <div className="divider" />
-
-          <h2 className="panel-title">Structure Overview</h2>
+        <div className="detail-content">
           
           {loading ? (
-            <div className="loading-text">Analyzing geometry...</div>
-          ) : parsedData ? (
+            <div className="loading-full" style={{ height: '200px' }}>
+              <div className="spinner" />
+              <div style={{ fontSize: '12px' }}>ANALYZING...</div>
+            </div>
+          ) : !parsedData ? (
+             <div className="empty-state">
+               <AlertCircle size={24} />
+               No structural data available for this plan.
+             </div>
+          ) : (
             <>
-              <div className="stats-grid">
-                <div className="stat-item">
-                  <div className="stat-value">{parsedData.geometry_stats.load_bearing_walls}</div>
-                  <div className="stat-label">Load-Bearing</div>
-                </div>
-                <div className="stat-item">
-                  <div className="stat-value">{parsedData.geometry_stats.partition_walls}</div>
-                  <div className="stat-label">Partitions</div>
-                </div>
-                <div className="stat-item">
-                  <div className="stat-value">{parsedData.geometry_stats.building_area_m2}</div>
-                  <div className="stat-label">Area (m²)</div>
-                </div>
-                <div className="stat-item">
-                  <div className="stat-value">{parsedData.walls.length}</div>
-                  <div className="stat-label">Total Walls</div>
-                </div>
-              </div>
-              
-              <div className="legend">
-                <div className="legend-item">
-                  <div className="legend-color load-bearing" />
-                  <span>Load-Bearing Structure</span>
-                </div>
-                <div className="legend-item">
-                  <div className="legend-color partition" />
-                  <span>Interior Partition</span>
-                </div>
-              </div>
-
-              <div className="hint-text">
-                Click a wall in the 3D view to see material recommendations
-              </div>
-            </>
-          ) : null}
-        </aside>
-
-        {/* Material Analysis Panel — appears when a wall is selected */}
-        {selectedWall && selectedWall.topsis_results && (
-          <div className="material-panel glass-panel">
-            <div className="material-panel-header">
-              <h2 className="panel-title">Material Analysis</h2>
-              <button className="close-btn" onClick={() => { setSelectedWall(null); setExplanation(null); }}>✕</button>
-            </div>
-
-            {/* Wall Identity */}
-            <div className="wall-identity">
-              <span className={`wall-badge ${selectedWall.type}`}>
-                {selectedWall.type === 'load_bearing' ? '🔵 Load-Bearing' : '⚪ Partition'}
-              </span>
-              <span className="wall-id">{selectedWall.id}</span>
-            </div>
-
-            {/* Dimensions */}
-            <div className="wall-dims">
-              <div><strong>Length:</strong> {selectedWall.length_m}m</div>
-              <div><strong>Thickness:</strong> {(selectedWall.thickness_m * 1000).toFixed(0)}mm</div>
-              <div><strong>Orient:</strong> {selectedWall.orientation}</div>
-              <div><strong>Reason:</strong> <em>{selectedWall.reason}</em></div>
-            </div>
-
-            {/* Concern Flags */}
-            {selectedWall.concerns && selectedWall.concerns.length > 0 && (
-              <div className="concern-box">
-                <AlertTriangle size={16} />
-                {selectedWall.concerns.map((c, i) => (
-                  <div key={i} className="concern-text">{c.message}</div>
-                ))}
-              </div>
-            )}
-
-            {/* Weight Profile */}
-            <div className="weight-profile">
-              <div className="weight-label">{selectedWall.topsis_results.weight_profile.label}</div>
-              <div className="weight-bars">
-                {Object.entries(selectedWall.topsis_results.weight_profile.weights).map(([key, val]) => (
-                  <div key={key} className="weight-bar-row">
-                    <span className="weight-name">
-                      {key === 'cost' ? <DollarSign size={12}/> : key === 'strength' ? <Shield size={12}/> : <Award size={12}/>}
-                      {key}
-                    </span>
-                    <div className="weight-bar-track">
-                      <div className="weight-bar-fill" style={{ width: `${val * 100}%` }} />
+              {/* MATERIALS VIEWER */}
+              {activeTab === 'materials' && (
+                <>
+                  <div className="stat-grid">
+                    <div className="stat-card">
+                      <div className="section-title" style={{ marginBottom: 4 }}>Volume</div>
+                      <div className="stat-val">{parsedData.geometry_stats?.total_volume_m3 || 0}m³</div>
                     </div>
-                    <span className="weight-pct">{Math.round(val * 100)}%</span>
+                    <div className="stat-card">
+                      <div className="section-title" style={{ marginBottom: 4 }}>Area</div>
+                      <div className="stat-val">{parsedData.geometry_stats?.building_area_m2 || 0}m²</div>
+                    </div>
                   </div>
-                ))}
-              </div>
-            </div>
-
-            {/* Top 3 Materials */}
-            <h3 className="panel-title" style={{ marginTop: 12 }}>Top 3 Recommendations</h3>
-            <div className="material-rankings">
-              {selectedWall.topsis_results.rankings.map((mat) => (
-                <div key={mat.rank} className={`material-card rank-${mat.rank}`}>
-                  <div className="material-rank">#{mat.rank}</div>
-                  <div className="material-info">
-                    <div className="material-name">{mat.name}</div>
-                    <div className="material-use">{mat.best_use}</div>
+                  
+                  <div className="card">
+                    <div className="section-title">Wall Inspector</div>
+                    <div className="wall-grid">
+                      {parsedData.walls?.map(w => (
+                        <div 
+                          key={w.id} 
+                          className={`wall-chip ${selectedWall?.id === w.id ? 'active' : ''}`} 
+                          onClick={() => handleWallClick(w)}
+                        >
+                          {w.id}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="material-score">{(mat.score * 100).toFixed(1)}%</div>
-                </div>
-              ))}
-            </div>
-
-            {/* LLM Explanation — Stage 5 */}
-            <div className="divider" />
-            <div className="explanation-section">
-              <h3 className="panel-title">
-                <MessageSquareText size={14} style={{display: 'inline', marginRight: 6, verticalAlign: 'middle'}} />
-                AI Structural Report
-              </h3>
-              {explainLoading ? (
-                <div className="explain-loading">
-                  <Loader2 size={16} className="spin-icon" />
-                  <span>Generating structural analysis...</span>
-                </div>
-              ) : explanation ? (
-                <div className="explain-content">
-                  <p className="explain-text">{explanation.explanation}</p>
-                  {explanation.critical_concern && (
-                    <div className="explain-concern">
-                      <AlertTriangle size={14} />
-                      <span>{explanation.critical_concern}</span>
+                  
+                  {selectedWall && (
+                    <div className="card" style={{ borderColor: 'var(--primary)' }}>
+                      <div className="section-title" style={{ color: 'var(--primary)' }}>Wall {selectedWall.id} Report</div>
+                      <table style={{ marginBottom: 16 }}>
+                        <tbody>
+                          <tr><td>TYPE</td><td>{selectedWall.is_load_bearing ? 'Load-Bearing' : 'Partition'}</td></tr>
+                          <tr><td>LENGTH</td><td>{selectedWall.length_m} m</td></tr>
+                          <tr><td>THICKNESS</td><td>{(selectedWall.thickness_m * 100).toFixed(1)} cm</td></tr>
+                        </tbody>
+                      </table>
+                      
+                      <div className="section-title">TOPSIS Ranking</div>
+                      {selectedWall.topsis_results && selectedWall.topsis_results.rankings ? (
+                        <table>
+                          <tbody>
+                            {selectedWall.topsis_results.rankings.slice(0, 3).map((res, i) => (
+                              <tr key={res.name}>
+                                <td style={{ color: i === 0 ? 'var(--primary)' : 'inherit' }}>{res.name}</td>
+                                <td>{(res.score * 100).toFixed(1)}%</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      ) : (
+                        <div className="text-body" style={{ fontStyle: 'italic' }}>No material data available.</div>
+                      )}
                     </div>
                   )}
-                  <div className="explain-provider">
-                    via {explanation.provider || 'LLM'}
+                </>
+              )}
+
+              {/* AI REPORT */}
+              {activeTab === 'ai' && (
+                <div className="card" style={{ flex: 1 }}>
+                  {!selectedWall ? (
+                    <div className="empty-state">
+                      <Zap size={24} />
+                      <p>Select a Wall from the "Materials" tab or the 3D viewer to generate an intelligent structural report.</p>
+                    </div>
+                  ) : explainLoading ? (
+                    <div className="loading-full" style={{ height: '100px' }}>
+                      <div className="spinner" />
+                    </div>
+                  ) : explanation ? (
+                    <>
+                      <div className="section-title" style={{ color: 'var(--primary)' }}>{explanation.provider.toUpperCase()} ENGINE</div>
+                      <div className="text-body" style={{ whiteSpace: 'pre-line' }}>{explanation.explanation}</div>
+                    </>
+                  ) : null}
+                </div>
+              )}
+
+              {/* COST ESTIMATE */}
+              {activeTab === 'cost' && (
+                <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
+                  <div className="section-title">Total Project Estimate</div>
+                  <div className="stat-val" style={{ color: '#00e676', fontSize: '28px', marginBottom: 20 }}>
+                    ₹ {costData?.total_cost?.toLocaleString('en-IN') || 0}
+                  </div>
+                  
+                  <div className="section-title">Material Breakdown</div>
+                  <div style={{ overflowY: 'auto', flex: 1 }}>
+                    <table>
+                      <thead>
+                        <tr>
+                          <th>WALL</th>
+                          <th>MATERIAL</th>
+                          <th style={{ textAlign: 'right' }}>COST</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {costData?.walls?.map(w => (
+                          <tr key={w.wall_id}>
+                            <td>{w.wall_id}</td>
+                            <td style={{ fontSize: '10px' }}>{w.material}</td>
+                            <td style={{ textAlign: 'right', color: '#69f0ae' }}>₹{Math.round(w.cost).toLocaleString('en-IN')}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 </div>
-              ) : (
-                <div className="explain-placeholder">Click a wall to generate a report</div>
               )}
-            </div>
-          </div>
-        )}
+            </>
+          )}
+        </div>
+      </aside>
 
-        {/* Loading State */}
-        {loading && (
-          <div className="loading-overlay">
-            <div className="spinner" />
-            <div>Constructing 3D Geometry...</div>
+      {/* RIGHT MAIN VIEW */}
+      <main className="main-view">
+        {/* 2D Image View */}
+        <section className="pane">
+          <div className="pane-header">
+            <ImageIcon size={14} /> 2D Source
           </div>
-        )}
+          <div className="pane-content">
+            {activePlan && !uploading && !loading ? (
+              <img src={getSourceImageUrl()} alt="Source Map" />
+            ) : (
+              <div className="loading-full">
+                {loading || uploading ? <div className="spinner" /> : <AlertCircle size={32} />}
+              </div>
+            )}
+          </div>
+        </section>
         
-        {/* Error State */}
-        {error && (
-          <div className="error-panel glass-panel">
-            <h3>⚠ Connection Error</h3>
-            <p>{error}</p>
+        {/* 3D Model View */}
+        <section className="pane">
+          <div className="pane-header">
+            <BoxSelect size={14} /> 3D Extrusion
           </div>
-        )}
-      </div>
+          <div className="pane-content">
+             <FloorPlanViewer 
+                ref={viewerRef}
+                parsedData={parsedData} 
+                selectedWallId={selectedWall?.id}
+                onWallClick={handleWallClick}
+              />
+          </div>
+        </section>
+      </main>
+
     </div>
   );
 }

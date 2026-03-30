@@ -1,10 +1,42 @@
-import React, { Suspense, useMemo } from 'react';
-import { Canvas } from '@react-three/fiber';
+import React, { Suspense, useMemo, forwardRef, useImperativeHandle } from 'react';
+import { Canvas, useThree } from '@react-three/fiber';
 import { OrbitControls, Grid, SoftShadows } from '@react-three/drei';
+import * as THREE from 'three';
+import { GLTFExporter } from 'three/examples/jsm/exporters/GLTFExporter.js';
 import Wall from './Wall';
 import Room from './Room';
 
-export default function FloorPlanViewer({ parsedData, selectedWallId, onWallClick }) {
+// Internal component to get access to the scene
+const ExportHelper = forwardRef((props, ref) => {
+  const { scene } = useThree();
+  
+  useImperativeHandle(ref, () => ({
+    exportGLB: (filename = "archintel_model.glb") => {
+      const exporter = new GLTFExporter();
+      exporter.parse(
+        scene,
+        (gltf) => {
+          const blob = new Blob([gltf], { type: 'application/octet-stream' });
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.style.display = 'none';
+          link.href = url;
+          link.download = filename;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        },
+        (error) => {
+          console.error('GLTF Export Failed:', error);
+        },
+        { binary: true } // Export as GLB
+      );
+    }
+  }));
+  return null;
+});
+
+const FloorPlanViewer = forwardRef(({ parsedData, selectedWallId, onWallClick }, ref) => {
   if (!parsedData || !parsedData.walls) {
     return null;
   }
@@ -26,6 +58,7 @@ export default function FloorPlanViewer({ parsedData, selectedWallId, onWallClic
   return (
     <div className="canvas-container">
       <Canvas shadows camera={{ position: [-8, 18, 18], fov: 45 }}>
+        <ExportHelper ref={ref} />
         <SoftShadows size={15} samples={10} focus={0.5} />
         
         <color attach="background" args={['#0f1115']} />
@@ -88,4 +121,6 @@ export default function FloorPlanViewer({ parsedData, selectedWallId, onWallClic
       </Canvas>
     </div>
   );
-}
+});
+
+export default FloorPlanViewer;

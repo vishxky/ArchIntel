@@ -31,3 +31,6 @@ output/
 # Node
 node_modules/
 frontend/dist/
+
+# Uploads
+data/floor_plans/upload_*

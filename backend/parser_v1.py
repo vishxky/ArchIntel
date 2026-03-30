@@ -70,121 +70,114 @@ def load_and_preprocess(image_path: str):
 # STEP 2: Remove Noise (text labels, door arcs, furniture icons)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def filter_noise_and_arcs(bw: np.ndarray, gray: np.ndarray) -> np.ndarray:
+def remove_noise(bw: np.ndarray, min_area: int = 200) -> np.ndarray:
     """
-    Remove non-wall elements using advanced connected-component analysis:
-    - Text/Icons: Drop blobs with aspect ratio < 2:1
-    - Door Arcs: Drop blobs with circularity > 0.4, plus HoughCircles erase
-    - Legends: Drop blobs in the bottom 10% of the image
+    Remove small connected regions (text, door arcs, scale bars, icons).
+
+    Why connected components?
+        Every group of touching white pixels is a "component". Wall segments
+        are large (hundreds of pixels). Text/icons are tiny. We keep only
+        components larger than min_area pixels.
+
+    Why min_area=200?
+        Tuned for these floor plans: wall segments are thousands of pixels,
+        door arcs are ~100-500 px but we handle that via a higher threshold.
+        Adjust if small rooms are getting filtered.
 
     Returns:
         clean — binary image with only large wall-like structures
     """
-    H, W = bw.shape
-    num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(bw, connectivity=8)
-
-    min_area = (H * W) * 0.0001
-    max_area = (H * W) * 0.5
+    # Find all connected white regions
+    nb_components, output, stats, _ = cv2.connectedComponentsWithStats(
+        bw, connectivity=8
+    )
 
     clean = np.zeros_like(bw)
-
-    for i in range(1, num_labels):
-        x, y, w, h, area = stats[i]
-        
-        # Absolute extremes filter
-        if area < min_area or area > max_area:
-            continue
-            
-        # For large blobs (the main house structure), keep them regardless of shape
-        if area > (H * W) * 0.05 or w > W * 0.25 or h > H * 0.25:  
-            # If the blob covers >25% of the frame horizontally or vertically, it's definitely a wall!
-            clean[labels == i] = 255
-            continue
-            
-        # Shape filters only apply to medium/small isolated blobs
-        # Aspect ratio filter (removes text/icons which are squarish)
-        aspect = max(w, h) / (min(w, h) + 1e-5)
-        if aspect < 2.0:
-            continue
-            
-        # Circularity filter (removes door swing arcs)
-        blob = (labels == i).astype(np.uint8) * 255
-        contours_b, _ = cv2.findContours(blob, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if contours_b:
-            perimeter = cv2.arcLength(contours_b[0], True)
-            circularity = 4 * np.pi * area / (perimeter ** 2 + 1e-5)
-            if circularity > 0.4:
-                continue
-                
-        # Scale bar / legend zone exclusion
-        if y > H * 0.90:
-            continue
-            
-        clean[labels == i] = 255
+    for i in range(1, nb_components):  # skip index 0 (background)
+        area = stats[i, cv2.CC_STAT_AREA]
+        if area >= min_area:
+            clean[output == i] = 255
 
     return clean
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 3: Morphological Cleanup — Directional Gap Closing
+# STEP 3: Morphological Cleanup — close tiny gaps in wall lines
 # ─────────────────────────────────────────────────────────────────────────────
 
-def directional_closing(clean: np.ndarray, gap_len: int = 25) -> np.ndarray:
+def morphological_cleanup(clean: np.ndarray) -> np.ndarray:
     """
-    Close wall gaps using directional kernels.
-    Isotropic closing merges parallel walls (doorways). Proper H/V kernels
-    only merge walls along their dominant axis.
+    Dilate then erode (= morphological closing) to bridge 1-2 pixel gaps
+    in wall lines caused by image compression or anti-aliasing.
+
+    Why dilate then erode?
+        Dilation expands white pixels by 1px → closes gaps.
+        Erosion shrinks back → restores original wall thickness.
+        Net effect: gaps are filled, walls remain the same size.
+
+    Returns:
+        cleaned binary image with continuous wall lines
     """
-    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (gap_len, 1))
-    closed_h = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, h_kernel)
-
-    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, gap_len))
-    closed_v = cv2.morphologyEx(clean, cv2.MORPH_CLOSE, v_kernel)
-
-    return cv2.bitwise_or(closed_h, closed_v)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    closed = cv2.dilate(clean, kernel, iterations=2)
+    closed = cv2.erode(closed, kernel, iterations=2)
+    return closed
 
 
 # ─────────────────────────────────────────────────────────────────────────────
 # STEP 4: Line Detection (Canny edges + Probabilistic Hough Transform)
 # ─────────────────────────────────────────────────────────────────────────────
 
-# ─────────────────────────────────────────────────────────────────────────────
-# STEP 4.5 & 5: Skeletonization and Vectorization
-# ─────────────────────────────────────────────────────────────────────────────
-
-from scipy.cluster.hierarchy import fcluster, linkage
-
-def skeletonize_and_vectorize(clean: np.ndarray, img_shape: tuple) -> list:
+def detect_lines(clean: np.ndarray, img_shape: tuple) -> list:
     """
-    Skeletonize the filled binary image to extract exact centerlines, then
-    use HoughLinesP on the skeleton to get line segments.
-    Filters down to orthogonal (H/V) segments.
+    Detect straight wall segments using Canny edge detection + HoughLinesP.
+
+    Why Canny first?
+        HoughLinesP works on edge images, not binary images. Canny converts
+        the binary wall regions into just their edge outlines.
+
+    Why HoughLinesP (Probabilistic Hough)?
+        It returns actual segment endpoints (x1,y1)→(x2,y2), not infinite
+        lines. Much easier to work with for geometry.
+
+    Why filter to horizontal/vertical only (abs < 5px)?
+        Orthogonal floor plans only have H/V walls. Diagonal detections are
+        artifacts from staircase edges or anti-aliasing — we discard them.
+
+    Returns:
+        list of ((x1,y1), (x2,y2)) tuples — all detected H/V wall segments
     """
-    # Use Zhang-Suen thinning
-    skeleton = cv2.ximgproc.thinning(clean, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
-    
+    # Canny edge detection
+    edges = cv2.Canny(clean, threshold1=30, threshold2=100, apertureSize=3)
+
     h, w = img_shape[:2]
-    min_line_len = max(20, int(min(h, w) * 0.03))
-    
-    # Run HoughLinesP on the 1-pixel wide skeleton
+    # Scale minLineLength to image size — larger images need longer min length
+    min_line_len = max(30, int(min(h, w) * 0.04))
+
+    # HoughLinesP parameters explained:
+    #   rho=1       → 1 pixel distance resolution
+    #   theta=π/180 → 1 degree angle resolution
+    #   threshold=60 → minimum votes (intersections) to count as a line
+    #   minLineLength → segments shorter than this are ignored
+    #   maxLineGap=15 → bridge gaps up to 15px (handles tiny wall breaks)
     linesP = cv2.HoughLinesP(
-        skeleton,
+        edges,
         rho=1,
         theta=np.pi / 180,
-        threshold=30,
+        threshold=60,
         minLineLength=min_line_len,
         maxLineGap=15,
     )
-    
+
     segments = []
     if linesP is not None:
         for line in linesP[:, 0, :]:
             x1, y1, x2, y2 = map(int, line)
             dx = abs(x1 - x2)
             dy = abs(y1 - y2)
-            
-            # Keep only horizontal/vertical (angle <= ~8 deg tolerance)
-            if dx < 8 or dy < 8:
+            # Keep only nearly horizontal (dy<5) or nearly vertical (dx<5)
+            if dx < 5 or dy < 5:
+                # Normalize: always store as left→right or top→bottom
                 if dx >= dy:  # horizontal
                     if x1 > x2:
                         x1, y1, x2, y2 = x2, y2, x1, y1
@@ -192,67 +185,43 @@ def skeletonize_and_vectorize(clean: np.ndarray, img_shape: tuple) -> list:
                     if y1 > y2:
                         x1, y1, x2, y2 = x2, y2, x1, y1
                 segments.append(((x1, y1), (x2, y2)))
-                
+
     return segments
 
 
-def snap_endpoints(segments: list, snap_tolerance: int = 8) -> list:
-    """
-    Cluster nearby endpoints using SciPy single-linkage clustering.
-    Prevents over-merging at T-junctions by preserving minimum distance.
-    """
-    if not segments:
-        return []
-        
-    pts = []
-    for s in segments:
-        pts.extend([s[0], s[1]])
-        
-    pts_arr = np.array(pts, dtype=float)
-    Z = linkage(pts_arr, method='single')
-    labels = fcluster(Z, t=snap_tolerance, criterion='distance')
-    
-    snapped_dict = {}
-    for label in np.unique(labels):
-        cluster = pts_arr[labels == label]
-        snapped_dict[label] = tuple(int(x) for x in np.round(cluster.mean(axis=0)))
-        
-    snapped_segments = []
-    for i, ((x1, y1), (x2, y2)) in enumerate(segments):
-        l1 = labels[i * 2]
-        l2 = labels[i * 2 + 1]
-        p1 = snapped_dict[l1]
-        p2 = snapped_dict[l2]
-        if p1 != p2: # Skip collapsed segments
-            snapped_segments.append((p1, p2))
-            
-    return snapped_segments
-
-
 # ─────────────────────────────────────────────────────────────────────────────
-# STEP 5.5: Clean up snapped segments
+# STEP 5: Coordinate Snapping — make walls connect at shared corners
 # ─────────────────────────────────────────────────────────────────────────────
 
-def merge_collinear_segments(segments: list, tol: int = 6) -> list:
+def merge_collinear_segments(segments: list, tol: int = 4) -> list:
     """
     Merge overlapping or adjacent segments that lie on the same horizontal
     or vertical axis into single longer segments.
+
+    Why?
+        HoughLinesP often splits one long wall into 2-3 shorter segments.
+        Polygonize needs fully continuous lines to form closed rooms.
+        Merging collinear fragments creates the continuous boundary needed.
     """
     if not segments:
         return []
 
-    h_segs = []  
-    v_segs = []  
+    # Separate horizontal and vertical segments
+    h_segs = []  # horizontal: same y
+    v_segs = []  # vertical: same x
     for (x1, y1), (x2, y2) in segments:
-        if abs(y1 - y2) <= tol:  
-            y_avg = int((y1 + y2) / 2)
+        if abs(y1 - y2) <= tol:  # horizontal
+            y_avg = (y1 + y2) // 2
             h_segs.append((y_avg, min(x1, x2), max(x1, x2)))
-        elif abs(x1 - x2) <= tol:  
-            x_avg = int((x1 + x2) / 2)
+        elif abs(x1 - x2) <= tol:  # vertical
+            x_avg = (x1 + x2) // 2
             v_segs.append((x_avg, min(y1, y2), max(y1, y2)))
 
     def merge_1d_group(segs_1d):
-        if not segs_1d: return []
+        """segs_1d: list of (axis_val, start, end) — merge overlapping intervals."""
+        if not segs_1d:
+            return []
+        # Group by axis value (within tol)
         segs_1d.sort(key=lambda s: (s[0], s[1]))
         groups = {}
         for axis, start, end in segs_1d:
@@ -264,16 +233,17 @@ def merge_collinear_segments(segments: list, tol: int = 6) -> list:
                     break
             if not placed:
                 groups[axis] = [(start, end)]
+        # Merge overlapping intervals per group
         result = []
         for axis, intervals in groups.items():
             intervals.sort()
             merged = [list(intervals[0])]
             for s, e in intervals[1:]:
-                if s <= merged[-1][1] + tol * 3:  
+                if s <= merged[-1][1] + tol * 3:  # allow small gap bridging
                     merged[-1][1] = max(merged[-1][1], e)
                 else:
                     merged.append([s, e])
-            result.extend([(int(axis), int(s), int(e)) for s, e in merged])
+            result.extend([(axis, s, e) for s, e in merged])
         return result
 
     merged = []
@@ -286,19 +256,89 @@ def merge_collinear_segments(segments: list, tol: int = 6) -> list:
 
 
 def close_segment_gaps(segments: list, extend_px: int = 6) -> list:
-    """Extend endpoints slightly to ensure clean corners."""
+    """
+    Slightly extend each wall segment at both ends so adjacent walls
+    actually overlap/touch at corners, allowing polygonize() to close rooms.
+
+    Why?
+        Even after snapping, detected endpoints may be 1-5px short of the
+        corner. A tiny extension ensures T-junctions and L-corners connect.
+    """
     extended = []
     for (x1, y1), (x2, y2) in segments:
         dx = x2 - x1
         dy = y2 - y1
         length = max(1, np.hypot(dx, dy))
         ux, uy = dx / length, dy / length
+        # Extend both ends by extend_px
         nx1 = int(round(x1 - ux * extend_px))
         ny1 = int(round(y1 - uy * extend_px))
         nx2 = int(round(x2 + ux * extend_px))
         ny2 = int(round(y2 + uy * extend_px))
         extended.append(((nx1, ny1), (nx2, ny2)))
     return extended
+
+
+def snap_coordinates(segments: list, tol: int = 8) -> list:
+    """
+    Cluster nearby X and Y coordinates together so walls share exact endpoints.
+
+    Why do we need this?
+        Detected lines are rarely pixel-perfect. Two walls that should meet
+        at the same corner might be at x=102 and x=105. Without snapping,
+        they don't connect → broken rooms, gaps in 3D model.
+
+    How it works:
+        1. Collect all X coordinates from all segment endpoints
+        2. Sort them and group any values within `tol` pixels together
+        3. Replace each X with the average of its group (the "snapped" value)
+        4. Same for Y coordinates
+        5. Apply the mapping to all segment endpoints
+
+    tol=8 pixels — tuned so legitimate separate walls (>8px apart) don't merge,
+    but near-duplicate detections (<8px apart) do snap together.
+
+    Returns:
+        list of snapped ((x1,y1), (x2,y2)) tuples
+    """
+    if not segments:
+        return []
+
+    # Collect all endpoints
+    all_pts = [pt for seg in segments for pt in seg]
+
+    def cluster_axis(vals):
+        """Group nearby values and return a mapping {original → snapped}."""
+        sorted_vals = sorted(set(vals))
+        if not sorted_vals:
+            return {}
+        clusters = [[sorted_vals[0]]]
+        for v in sorted_vals[1:]:
+            if abs(v - clusters[-1][-1]) <= tol:
+                clusters[-1].append(v)
+            else:
+                clusters.append([v])
+        mapping = {}
+        for cluster in clusters:
+            snapped = int(round(sum(cluster) / len(cluster)))
+            for v in cluster:
+                mapping[v] = snapped
+        return mapping
+
+    map_x = cluster_axis([p[0] for p in all_pts])
+    map_y = cluster_axis([p[1] for p in all_pts])
+
+    snapped = []
+    for (x1, y1), (x2, y2) in segments:
+        sx1 = map_x.get(x1, x1)
+        sy1 = map_y.get(y1, y1)
+        sx2 = map_x.get(x2, x2)
+        sy2 = map_y.get(y2, y2)
+        # Skip zero-length segments (both endpoints snapped to same point)
+        if (sx1, sy1) != (sx2, sy2):
+            snapped.append(((sx1, sy1), (sx2, sy2)))
+
+    return snapped
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -624,24 +664,23 @@ def parse_floor_plan(image_path: str) -> dict:
 
     # ── Step 2: Remove noise ─────────────────────────────────────────────────
     print("  Step 2: Removing noise (text, door arcs, icons)...")
-    clean_no_noise = filter_noise_and_arcs(bw, img_gray)
-    
-    # Keep a copy of the un-closed mask for opening detection (so doors aren't bridged)
-    wall_mask = clean_no_noise.copy()
+    clean = remove_noise(bw, min_area=200)
 
-    # Step 3: Morphological cleanup (closing wall gaps)
+    # ── Step 3: Morphological cleanup ────────────────────────────────────────
     print("  Step 3: Morphological cleanup (closing wall gaps)...")
-    dynamic_gap_len = max(25, int(max(bw.shape) * 0.035))
-    clean = directional_closing(clean_no_noise, gap_len=dynamic_gap_len)
+    clean = morphological_cleanup(clean)
 
-    # ── Step 4: Line detection via Skeletonization ───────────────────────────
-    print("  Step 4: Skeletonizing and vectorizing centerlines...")
-    raw_segments = skeletonize_and_vectorize(clean, (h, w))
+    # Keep a copy of the clean mask for opening detection later
+    wall_mask = clean.copy()
+
+    # ── Step 4: Line detection ───────────────────────────────────────────────
+    print("  Step 4: Detecting wall lines (Canny + HoughLinesP)...")
+    raw_segments = detect_lines(clean, (h, w))
     print(f"          Raw segments detected: {len(raw_segments)}")
 
     # ── Step 5: Coordinate snapping ──────────────────────────────────────────
-    print("  Step 5: Snapping coordinates via hierarchical clustering...")
-    snapped = snap_endpoints(raw_segments, snap_tolerance=int(min(h, w) * 0.015)) # ~10px for ~700px image
+    print("  Step 5: Snapping coordinates (tol=25px)...")
+    snapped = snap_coordinates(raw_segments, tol=25)
     print(f"          After snapping: {len(snapped)} segments")
 
     # Merge collinear/overlapping segments on the same axis
@@ -666,7 +705,7 @@ def parse_floor_plan(image_path: str) -> dict:
 
     # ── Step 6: Room extraction ──────────────────────────────────────────────
     print("  Step 6: Extracting room polygons (Connected Components)...")
-    rooms = extract_rooms(snapped, (h, w), min_room_area_px=2000, wall_mask=clean)
+    rooms = extract_rooms(snapped, (h, w), min_room_area_px=2000, wall_mask=wall_mask)
     print(f"          Rooms found: {len(rooms)}")
 
     # ── Step 7: Opening detection ────────────────────────────────────────────

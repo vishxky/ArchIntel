@@ -1,7 +1,10 @@
 import sys
 from pathlib import Path
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+import shutil
+import uuid
 
 # Add backend directory to sys.path so we can import parser modules
 sys.path.insert(0, str(Path(__file__).parent))
@@ -10,13 +13,14 @@ from parser import parse_floor_plan
 from geometry import reconstruct_geometry
 from topsis import analyze_all
 from explainer import explain_all, explain_wall
+from cost_estimator import estimate_cost
 
 app = FastAPI(title="ArchIntel API", description="AI Floor Plan to 3D Geometry Extractor")
 
 # Allow the Vite frontend to access the API locally
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -116,3 +120,47 @@ def explain_single_wall(plan_id: str, wall_id: str):
         return {"success": True, "wall_id": wall_id, **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+        
+        
+@app.post("/api/upload")
+async def upload_plan(file: UploadFile = File(...)):
+    """Upload a new floor plan image to the data directory."""
+    if not file.filename.endswith(('.png', '.jpg', '.jpeg')):
+        raise HTTPException(status_code=400, detail="Only PNG and JPEG files are supported")
+        
+    # Generate unique ID and save file
+    plan_id = f"upload_{uuid.uuid4().hex[:8]}"
+    file_extension = Path(file.filename).suffix
+    
+    if not DATA_DIR.exists():
+        DATA_DIR.mkdir(parents=True)
+        
+    # Always save as .png since parser expects that format primarily
+    dest_path = DATA_DIR / f"{plan_id}.png"
+    
+    with dest_path.open("wb") as buffer:
+        shutil.copyfileobj(file.file, buffer)
+        
+    return {"success": True, "plan_id": plan_id}
+    
+    
+@app.get("/api/image/{plan_id}")
+def get_image(plan_id: str):
+    """Returns the original source image for the frontend 2D view."""
+    image_path = DATA_DIR / f"{plan_id}.png"
+    if not image_path.exists():
+        raise HTTPException(status_code=404, detail="Floor plan image not found")
+        
+    return FileResponse(image_path, media_type="image/png")
+    
+
+@app.get("/api/cost/{plan_id}")
+def get_cost(plan_id: str):
+    """Calculates the estimated cost for building this structural layout."""
+    if plan_id not in _cache:
+        parse_plan(plan_id)
+        
+    parsed_data = _cache[plan_id]["data"]
+    cost_data = estimate_cost(parsed_data)
+    
+    return {"success": True, "plan_id": plan_id, "data": cost_data}
