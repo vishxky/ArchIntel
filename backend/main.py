@@ -27,6 +27,7 @@ app.add_middleware(
 )
 
 DATA_DIR = Path(__file__).parent.parent / "data" / "floor_plans"
+OUTPUT_DIR = Path(__file__).parent.parent / "output"
 
 # Simple in-memory cache — avoid re-parsing the same plan on every click
 _cache = {}
@@ -153,6 +154,19 @@ def get_image(plan_id: str):
         
     return FileResponse(image_path, media_type="image/png")
     
+
+@app.get("/api/debug_image/{plan_id}")
+def get_debug_image(plan_id: str):
+    """Returns the parsed output image with borders, AI markings, and green walls."""
+    # Ensure it's parsed first to generate the debug image if missing
+    if plan_id not in _cache:
+        parse_plan(plan_id)
+        
+    debug_path = OUTPUT_DIR / f"{plan_id}_debug.png"
+    if not debug_path.exists():
+        raise HTTPException(status_code=404, detail="Debug image not found")
+        
+    return FileResponse(debug_path, media_type="image/png")
 
 @app.get("/api/cost/{plan_id}")
 def get_cost(plan_id: str):

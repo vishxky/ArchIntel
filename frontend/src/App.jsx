@@ -1,5 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import axios from 'axios';
+import { jsPDF } from "jspdf";
+import autoTable from "jspdf-autotable";
 import { Layers, Map, Upload, AlertCircle, FileText, IndianRupee, Cpu, Box, Loader2, Download, Zap, Image as ImageIcon, BoxSelect } from 'lucide-react';
 import FloorPlanViewer from './components/FloorPlanViewer';
 import './index.css';
@@ -19,6 +21,7 @@ function App() {
   const [selectedWall, setSelectedWall] = useState(null);
   const [explanation, setExplanation] = useState(null);
   const [explainLoading, setExplainLoading] = useState(false);
+  const [showDebugImage, setShowDebugImage] = useState(false);
   
   const [activeTab, setActiveTab] = useState('materials');
   const fileInputRef = useRef(null);
@@ -120,12 +123,59 @@ function App() {
     return `${API_BASE}/image/${activePlan}?t=${new Date().getTime()}`;
   };
 
+  const getDebugImageUrl = () => {
+    if (!activePlan) return '';
+    return `${API_BASE}/debug_image/${activePlan}?t=${new Date().getTime()}`;
+  };
+
   const exportGLB = () => {
     if (viewerRef.current?.exportGLB) {
       viewerRef.current.exportGLB(`${activePlan}_3dmodel.glb`);
     } else {
       alert("GLB export feature is not ready yet.");
     }
+  };
+
+  const exportPDF = () => {
+    if (!costData || !costData.walls) return;
+    
+    const doc = new jsPDF();
+    doc.setFont("helvetica", "normal");
+    
+    // Header
+    doc.setFontSize(18);
+    doc.setTextColor(0, 0, 0);
+    doc.text("ArchIntel - Architectural Estimate Report", 14, 22);
+    
+    doc.setFontSize(12);
+    doc.setTextColor(80, 80, 80);
+    doc.text(`Plan Name: ${activePlan || 'Unknown'}`, 14, 32);
+    doc.text(`Total Estimated Budget: INR ${costData.total_cost?.toLocaleString('en-IN')}`, 14, 40);
+    
+    // Table
+    const tableColumn = ["Sl. No.", "Item Name", "Cost per unit", "Quantity", "Total Amount", "Justification"];
+    const tableRows = [];
+    
+    costData.walls.forEach((w, index) => {
+      tableRows.push([
+        index + 1,
+        `Wall ${w.wall_id}: ${w.material}`,
+        `Rs. ${w.unit_rate?.toLocaleString('en-IN')} / cu.m.`,
+        `${w.volume_m3} cu.m.`,
+        `Rs. ${Math.round(w.cost).toLocaleString('en-IN')}`,
+        w.justification || "Selected via AI Optimization"
+      ]);
+    });
+    
+    autoTable(doc, {
+      head: [tableColumn],
+      body: tableRows,
+      startY: 50,
+      styles: { fontSize: 9 },
+      headStyles: { fillColor: [0, 112, 243] }, // Vercel blue
+    });
+    
+    doc.save(`${activePlan || 'project'}_estimate.pdf`);
   };
 
   return (
@@ -271,7 +321,12 @@ function App() {
               {/* COST ESTIMATE */}
               {activeTab === 'cost' && (
                 <div className="card" style={{ flex: 1, display: 'flex', flexDirection: 'column' }}>
-                  <div className="section-title">Total Project Estimate</div>
+                  <div className="section-title" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    Total Project Estimate
+                    <button className="btn" style={{ width: 'auto', padding: '4px 12px', fontSize: '10px' }} onClick={exportPDF}>
+                      EXPORT PDF
+                    </button>
+                  </div>
                   <div className="stat-val" style={{ color: '#00e676', fontSize: '28px', marginBottom: 20 }}>
                     ₹ {costData?.total_cost?.toLocaleString('en-IN') || 0}
                   </div>
@@ -308,12 +363,25 @@ function App() {
       <main className="main-view">
         {/* 2D Image View */}
         <section className="pane">
-          <div className="pane-header">
-            <ImageIcon size={14} /> 2D Source
+          <div className="pane-header" style={{ justifyContent: 'space-between' }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <ImageIcon size={14} /> 2D Source
+            </span>
+            <button 
+              className={`btn ${showDebugImage ? 'active' : ''}`} 
+              style={{ width: 'auto', padding: '4px 8px', fontSize: '10px' }}
+              onClick={() => setShowDebugImage(!showDebugImage)}
+            >
+              {showDebugImage ? 'VIEW ORIGINAL' : 'VIEW AI OVERLAY'}
+            </button>
           </div>
           <div className="pane-content">
             {activePlan && !uploading && !loading ? (
-              <img src={getSourceImageUrl()} alt="Source Map" />
+              <img 
+                src={showDebugImage ? getDebugImageUrl() : getSourceImageUrl()} 
+                alt="Source Map" 
+                style={showDebugImage ? { filter: 'none' } : {}}
+              />
             ) : (
               <div className="loading-full">
                 {loading || uploading ? <div className="spinner" /> : <AlertCircle size={32} />}

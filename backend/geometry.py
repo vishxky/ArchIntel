@@ -240,6 +240,12 @@ def reconstruct_geometry(parsed_data: dict, assumed_width_m: float = 12.0) -> di
     # 5. Build Final Structural Graph
     graph = build_graph(walls)
     
+    # Calculate total volume
+    total_volume_m3 = 0.0
+    WALL_HEIGHT_M = 3.0
+    for w in walls:
+        total_volume_m3 += w.get('length_m', 0.0) * w.get('thickness_m', 0.0) * WALL_HEIGHT_M
+
     # Count stats
     load_bearing = sum(1 for w in walls if w['type'] == 'load_bearing')
     partitions = len(walls) - load_bearing
@@ -249,7 +255,8 @@ def reconstruct_geometry(parsed_data: dict, assumed_width_m: float = 12.0) -> di
         "edges": graph.number_of_edges(),
         "load_bearing_walls": load_bearing,
         "partition_walls": partitions,
-        "building_area_m2": round(building_poly.area / (px_per_meter ** 2), 2)
+        "building_area_m2": round(building_poly.area / (px_per_meter ** 2), 2),
+        "total_volume_m3": round(total_volume_m3, 2)
     }
 
     return parsed_data, graph

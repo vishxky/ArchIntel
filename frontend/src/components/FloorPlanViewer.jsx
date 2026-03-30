@@ -56,8 +56,8 @@ const FloorPlanViewer = forwardRef(({ parsedData, selectedWallId, onWallClick },
   }, [walls, px_per_meter]);
   
   return (
-    <div className="canvas-container">
-      <Canvas shadows camera={{ position: [-8, 18, 18], fov: 45 }}>
+    <div className="canvas-container" style={{ width: '100%', height: '100%', position: 'absolute' }}>
+      <Canvas shadows camera={{ position: [-4, 12, 12], fov: 45 }}>
         <ExportHelper ref={ref} />
         <SoftShadows size={15} samples={10} focus={0.5} />
         
