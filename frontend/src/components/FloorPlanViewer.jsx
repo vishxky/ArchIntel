@@ -61,21 +61,12 @@ const FloorPlanViewer = forwardRef(({ parsedData, selectedWallId, onWallClick },
         <ExportHelper ref={ref} />
         <SoftShadows size={15} samples={10} focus={0.5} />
         
-        <color attach="background" args={['#0f1115']} />
+        <color attach="background" args={['#0a0a0a']} />
         
-        {/* Environmental Lighting */}
-        <ambientLight intensity={0.5} />
-        <directionalLight 
-          castShadow 
-          position={[20, 30, 10]} 
-          intensity={1.5} 
-          shadow-mapSize={[2048, 2048]}
-          shadow-camera-left={-20}
-          shadow-camera-right={20}
-          shadow-camera-top={20}
-          shadow-camera-bottom={-20}
-        />
-        <directionalLight position={[-10, 15, -10]} intensity={0.4} color="#8facff" />
+        {/* Soft Studio Lighting */}
+        <ambientLight intensity={0.4} color="#ffffff" />
+        <directionalLight position={[10, 20, 10]} intensity={1.5} color="#ffffff" castShadow />
+        <directionalLight position={[-10, 10, -10]} intensity={0.5} color="#b0d0ff" />
 
         <Suspense fallback={null}>
           {/* Center the model at origin */}
@@ -99,14 +90,14 @@ const FloorPlanViewer = forwardRef(({ parsedData, selectedWallId, onWallClick },
             {/* Base Grid helper */}
             <Grid 
               position={[offset.x, -0.01, offset.z]}
-              args={[80, 80]} 
+              args={[100, 100]} 
               cellSize={1} 
-              cellThickness={1} 
-              cellColor="#1c202a" 
+              cellThickness={0.8} 
+              cellColor="#111111" 
               sectionSize={5} 
-              sectionThickness={1.5} 
-              sectionColor="#2a303f" 
-              fadeDistance={40} 
+              sectionThickness={1.2} 
+              sectionColor="#1a1a1a" 
+              fadeDistance={60} 
             />
           </group>
         </Suspense>
